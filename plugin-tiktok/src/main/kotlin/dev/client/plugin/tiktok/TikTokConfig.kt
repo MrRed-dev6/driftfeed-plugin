@@ -15,7 +15,7 @@ internal data class TikTokConfig(
     val baseUrl: String = "https://www.tiktok.com",
     /**
      * Раздел `/embed` — единственная часть сайта TikTok, которая отдаёт данные
-     * обычным HTML без подписи `X-Bogus`/`X-Gnarly`. Всё остальное (`/api/*`,
+     * обычным HTML без подписи `X-Bogus`/`X-Gnarly`. Всё остальное (`/api/…`,
      * лента, поиск, комментарии) закрыто и требует подписи из браузерного SDK.
      */
     val embedPath: String = "/embed",
