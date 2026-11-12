@@ -1,0 +1,69 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Тесты разбора
+        run: gradle :plugin-tiktok:test --console=plain --no-daemon
+
+      - name: Проверка ключа подписи
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "нет секрета PLUGIN_SIGNING_KEY — подписать нечем" >&2
+            exit 1
+          fi
+
+      - name: Сборка, dex, подпись
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          PLUGIN_VERSION: ${{ github.run_number }}
+          PLUGIN_DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/provider-tiktok.jar
+          PLUGIN_SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+        run: |
+          mkdir -p tools
+          printf '%s' "$PLUGIN_SIGNING_KEY" > tools/plugin-signing-key.pem
+          chmod 600 tools/plugin-signing-key.pem
+          bash ./tools/build-plugin.sh
+          rm -f tools/plugin-signing-key.pem
+
+      # sources.json — ассет релиза: у latest/download/sources.json постоянный
+      # адрес, коммитить манифест в ветку не нужно.
+      - name: Публикация релиза
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/provider-tiktok.jar
+            dist/sources.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plugin
+          path: dist/
+          if-no-files-found: ignore

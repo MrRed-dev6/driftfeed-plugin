@@ -1,0 +1,19 @@
+# Gradle
+.gradle/
+build/
+*/build/
+local.properties
+
+# Результаты сборки плагина
+dist/
+tools/.cache/
+
+# ПРИВАТНЫЙ КЛЮЧ ПОДПИСИ. Никогда не коммитить.
+tools/plugin-signing-key.pem
+*.pem
+*.key
+
+# IDE
+.idea/
+*.iml
+.DS_Store
