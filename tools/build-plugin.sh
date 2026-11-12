@@ -98,7 +98,10 @@ HASH="$(sha256sum "$OUT" | cut -d' ' -f1)"
 echo "    $HASH"
 
 echo "==> 5/5 подпись"
-printf '%s' "$HASH" | openssl pkeyutl -sign -inkey "$KEY" -rawin -out "$WORK/sig.bin"
+# -rawin требует регулярный файл: из pipe OpenSSL 3 отвечает
+# "unable to determine file size for oneshot operation".
+printf '%s' "$HASH" > "$WORK/hash.txt"
+openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$WORK/hash.txt" -out "$WORK/sig.bin"
 SIG="$(base64 -w0 < "$WORK/sig.bin")"
 
 SIZE="$(du -h "$OUT" | cut -f1)"
