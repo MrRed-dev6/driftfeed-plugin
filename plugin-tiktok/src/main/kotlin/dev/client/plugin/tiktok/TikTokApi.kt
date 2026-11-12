@@ -61,8 +61,13 @@ internal class TikTokApi(
             ?: throw ProviderError.Unknown("Видео $clean не найдено")
         val infos = videoData.optJSONObject("itemInfos")
             ?: throw ProviderError.Unknown("Видео $clean не найдено")
-        return parseEmbedVideo(infos, videoData.optJSONObject("authorInfos"))
+        val item = parseEmbedVideo(infos, videoData.optJSONObject("authorInfos"))
             ?: throw ProviderError.Unknown("Не удалось разобрать видео $clean")
+        if (item.playUrl.isBlank()) {
+            // Фотопост: у него есть только обложки, потока нет вообще.
+            throw ProviderError.Unknown("У поста $clean нет видео: это фотопост")
+        }
+        return item
     }
 
     suspend fun profile(id: String): Author {
@@ -120,10 +125,19 @@ internal class TikTokApi(
         // На странице профиля автор известен точно — он один для всех видео.
         val author = node.optJSONObject("userInfo")?.let(::parseAuthor)
         val result = ArrayList<VideoItem>(array.length())
+        var photoPosts = 0
         for (i in 0 until array.length()) {
-            val item = array.optJSONObject(i) ?: continue
-            parsePlaylistItem(item, author)?.let(result::add)
+            val entry = array.optJSONObject(i) ?: continue
+            val item = parsePlaylistItem(entry, author) ?: continue
+            // Фотопосты приходят без ссылки на поток: проигрывать нечего,
+            // поэтому в ленту они не попадают.
+            if (item.playUrl.isBlank()) {
+                photoPosts++
+                continue
+            }
+            result.add(item)
         }
+        if (photoPosts > 0) context.log(TAG, "пропущено фотопостов без видео: $photoPosts")
         return result
     }
 
