@@ -82,7 +82,7 @@ mkdir -p "$DIST"
 OUT="$DIST/provider-tiktok.jar"
 rm -f "$OUT"
 
-# Ресурсы (например, JS-скрипт подписи) копируем рядом с classes.dex,
+# Ресурсы (если появятся) копируем рядом с classes.dex,
 # иначе они не попадут в итоговый jar: d8 переносит только классы.
 if [ -n "$(find "$WORK/classes" -type f ! -name '*.class' -print -quit)" ]; then
     ( cd "$WORK/classes" && find . -type f ! -name '*.class' | while IFS= read -r f; do

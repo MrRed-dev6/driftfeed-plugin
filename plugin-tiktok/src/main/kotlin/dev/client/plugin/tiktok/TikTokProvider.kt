@@ -9,11 +9,12 @@ import dev.client.provider.ProviderContext
 import dev.client.provider.VideoItem
 
 /**
- * Настоящий источник данных.
+ * Источник данных TikTok для клиента driftfeed.
  *
- * Подпись запросов считает JS-движок клиента (см. [Signer]).
- * Если SDK подписи в плагине нет, провайдер честно объявляет нулевые
- * возможности — вместо того чтобы падать на первом запросе.
+ * Данные берутся со страниц раздела `/embed`, которые отдаются без подписи
+ * (см. [TikTokApi]). Возможности объявлены по факту, а не «на всякий случай»:
+ * клиент скрывает в интерфейсе то, чего провайдер не умеет, и обещать лишнее
+ * значит показать пользователю пустой экран вместо кнопки.
  *
  * Настроек у провайдера нет намеренно: клиент — чужая сторона, и договариваться
  * с ним о новом методе конфигурации значит менять общий контракт. Регион и
@@ -22,21 +23,20 @@ import dev.client.provider.VideoItem
 class TikTokProvider(private val context: ProviderContext) : Provider {
 
     private val config: TikTokConfig = TikTokConfig()
-    private val storage: Storage = ProviderStorage(context)
-    private val session: TikTokSession = TikTokSession(storage)
-    private val signer: Signer = JsSigner(context)
-    private val api: TikTokApi = TikTokApi(context, config, signer, session)
+    private val api: TikTokApi = TikTokApi(context, config)
 
     override val id: String = "tiktok"
     override val displayName: String = "TikTok"
 
-    override val capabilities: Capabilities
-        get() = if (signer.available) {
-            Capabilities(feed = true, search = true, comments = true, videoByUrl = true, profile = true)
-        } else {
-            // Без подписи TikTok не отдаёт ни ленту, ни поиск, ни комментарии.
-            Capabilities(feed = false, search = false, comments = false, videoByUrl = false, profile = false)
-        }
+    override val capabilities: Capabilities = Capabilities(
+        feed = true,
+        // Поиск идёт по хештегам: открытого поиска по словам без подписи нет.
+        search = true,
+        // В /embed комментариев не бывает — не показываем кнопку, которой некуда вести.
+        comments = false,
+        videoByUrl = true,
+        profile = true,
+    )
 
     override suspend fun getFeed(cursor: String?): Page<VideoItem> = api.feed(cursor)
 
@@ -46,7 +46,7 @@ class TikTokProvider(private val context: ProviderContext) : Provider {
     override suspend fun getVideo(id: String): VideoItem = api.video(id)
 
     override suspend fun getComments(videoId: String, cursor: String?): Page<Comment> =
-        api.comments(videoId, cursor)
+        api.comments()
 
     override suspend fun getProfile(id: String): Author = api.profile(id)
 }
