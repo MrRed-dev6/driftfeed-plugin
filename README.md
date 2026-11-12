@@ -61,6 +61,25 @@ https://github.com/MrRed-dev6/driftfeed-plugin/releases/latest/download/sources.
 `-----BEGIN/END-----`. Публичный ключ отдаётся стороне клиента: он зашит в
 `TrustedKey.PUBLIC_KEY_BASE64` и меняется только релизом приложения.
 
+## Видимость репозитория
+
+Репозиторий должен быть **публичным**. Клиент скачивает `sources.json` и jar
+обычным HTTPS-запросом без авторизации, а GitHub на ассеты приватного
+репозитория отвечает `Not Found` — установка источника просто не начнётся.
+
+Проверка одной строкой, без токена:
+
+```
+curl -s https://github.com/MrRed-dev6/driftfeed-plugin/releases/latest/download/sources.json
+```
+
+Должен прийти JSON. Пока приходит `Not Found`, дело не в плагине и не
+в клиенте.
+
+Открывать код не страшно: приватный ключ подписи лежит в Secrets и в файлах
+не появляется, а целостность jar всё равно проверяется подписью — без ключа
+подменить файл нельзя.
+
 ## Что нужно от клиента
 
 1. `ProviderContext` с сетью и `evalJs` — как в `ClientProviderContext`.
