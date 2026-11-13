@@ -76,8 +76,10 @@ private fun firstString(array: JSONArray): String? {
 internal fun parseAuthor(json: JSONObject?): Author {
     if (json == null) return UNKNOWN_AUTHOR
     val username = json.str("uniqueId", "unique_id", "uniqueIdModify")
-    val avatar = json.firstUrl("avatarThumbUrl", "avatarLarger", "avatarThumb", "avatarMedium", "avatar")
-        ?: json.firstUrl("covers", "coverUrl")
+    val avatar = json.firstUrl(
+        "avatarThumbUrl", "avatarLarger", "avatarThumb", "avatarMedium", "avatar",
+        "avatar_larger", "avatar_medium", "avatar_thumb",
+    ) ?: json.firstUrl("covers", "coverUrl")
     return Author(
         id = username ?: json.str("userId", "uid", "id", "secUid", "sec_uid") ?: "unknown",
         username = username ?: "unknown",
@@ -164,6 +166,22 @@ internal fun parseComment(json: JSONObject): Comment? {
         text = json.str("text", "content") ?: "",
         likeCount = json.lng("digg_count", "diggCount", "like_count"),
         replyCount = json.lng("reply_total", "reply_count", "replyTotal"),
+    )
+}
+
+/**
+ * Комментарий самого TikTok: `cid` вместо `id`, `reply_comment_total` вместо
+ * `reply_total`. Остальное совпадает со шлюзом, поэтому автор разбирается тем
+ * же [parseAuthor].
+ */
+internal fun parseOfficialComment(json: JSONObject): Comment? {
+    val id = json.str("cid", "id") ?: return null
+    return Comment(
+        id = id,
+        author = parseAuthor(json.obj("user", "author")),
+        text = json.str("text") ?: "",
+        likeCount = json.lng("digg_count", "diggCount"),
+        replyCount = json.lng("reply_comment_total", "reply_total", "replyCount"),
     )
 }
 

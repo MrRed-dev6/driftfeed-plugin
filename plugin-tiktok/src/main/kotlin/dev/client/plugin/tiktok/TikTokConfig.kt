@@ -26,6 +26,14 @@ internal data class TikTokConfig(
     /** Сколько элементов просить у шлюза за раз: больше 30 он не отдаёт. */
     val feedPageSize: Int = 20,
     val commentPageSize: Int = 20,
+    /**
+     * Поисковик, через индекс которого ищется текст: поиск самого TikTok закрыт
+     * подписью, поэтому слова ищутся по проиндексированным страницам видео.
+     */
+    val searchEngineUrl: String = "https://lite.duckduckgo.com",
+    val searchSite: String = "tiktok.com/video",
+    /** Сколько найденных видео доразбирать: каждое — отдельный запрос страницы. */
+    val searchDetailLimit: Int = 5,
     /** Дополнительные заголовки, если понадобятся конкретной версии эндпоинтов. */
     val extraHeaders: Map<String, String> = emptyMap(),
 ) {

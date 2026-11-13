@@ -11,11 +11,11 @@ import org.json.JSONObject
 /**
  * Источник данных TikTok: две дороги, каждая для того, что ей доступно.
  *
- *  - `/embed` самого TikTok — профиль, видео по id, страница хештега (поиск).
- *    Обычный HTML, подпись не нужна, посредники не участвуют.
- *  - шлюз `tikwm.com` ([TikTokGateway]) — лента и комментарии. Их у TikTok нельзя
- *    взять без подписи: веб-API отвечает пустым телом даже с валидной
- *    `X-Gnarly`, а в `/embed` этих разделов нет по устройству страницы.
+ *  - сам TikTok — профиль, видео по id, страница хештега (поиск) и
+ *    комментарии (`/api/comment/list/` открыт без подписи, им же пользуется
+ *    встроенный плеер на чужих сайтах);
+ *  - шлюз `tikwm.com` ([TikTokGateway]) — только лента: её у TikTok нельзя
+ *    взять без подписи, а в `/embed` её нет по устройству страницы.
  *
  * Ничего не кэширует: запрос → разбор → Page. Ошибки переводит в ProviderError,
  * чтобы клиент показал осмысленный текст.
@@ -26,6 +26,7 @@ internal class TikTokApi(
 ) {
 
     private val gateway: TikTokGateway = TikTokGateway(context, config)
+    private val searchEngine: TikTokSearch = TikTokSearch(context, config)
 
     /**
      * Лента. Шлюз отдаёт случайную порцию, курсора у него нет, поэтому курсор
@@ -55,16 +56,70 @@ internal class TikTokApi(
     }
 
     /**
-     * Поиск по хештегу: другого открытого поиска у TikTok нет.
+     * Поиск. Три пути по убыванию качества, каждый следующий — запасной:
      *
-     * Полнотекстового поиска без подписи не существует: `/api/search/general/full/`
-     * отдаёт пустое тело, а у шлюза поиск закрыт Cloudflare. Зато страница
-     * хештега открыта, поэтому запрос превращается в тег, а для фразы из
-     * нескольких слов проверяются два варианта (см. [hashtagCandidates]).
+     *  1. настоящие результаты TikTok через шлюз (`/api/feed/search`) — свежие,
+     *     с полной статистикой, но Cloudflare пускает туда только браузеры;
+     *  2. полнотекстовый поиск по индексу поисковика ([TikTokSearch]): слова
+     *     ищутся по описаниям проиндексированных видео, глубина — одна страница;
+     *  3. хештег из запроса — то, что открыто у самого TikTok.
+     *
+     * Почему не поиск TikTok напрямую: `/api/search/general/full/` без подписи
+     * отвечает `url doesn't match`, с подписью `X-Gnarly` — пустым телом.
      */
     suspend fun search(query: String, cursor: String?): Page<VideoItem> {
+        val text = query.trim()
+        if (text.isEmpty()) throw ProviderError.Unknown("Пустой поисковый запрос")
+        val offset = cursor?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
+
+        gatewaySearch(text, offset)?.let { return it }
+
+        // У индекса нет глубины: вторая страница пошла бы по кругу.
+        if (offset == 0) {
+            val byIndex = searchByIndex(text)
+            if (byIndex.isNotEmpty()) return Page(items = byIndex, nextCursor = null, hasMore = false)
+        }
+
+        return searchByHashtags(text)
+    }
+
+    private suspend fun gatewaySearch(query: String, offset: Int): Page<VideoItem>? {
+        val raw = try {
+            gateway.search(query, offset)
+        } catch (e: Throwable) {
+            context.log(TAG, "поиск через шлюз не вышел: ${e.message}")
+            return null
+        }
+        val items = ArrayList<VideoItem>(raw.size)
+        for (entry in raw) {
+            val item = parseGatewayItem(entry) ?: continue
+            if (item.playUrl.isNotBlank()) items.add(item)
+        }
+        if (items.isEmpty()) return null
+        return Page(items = items, nextCursor = (offset + items.size).toString(), hasMore = true)
+    }
+
+    /** Поиск по словам через индекс: id видео → страница `/embed/<id>` → элемент. */
+    private suspend fun searchByIndex(query: String): List<VideoItem> {
+        val ids = searchEngine.videoIds(query)
+        if (ids.isEmpty()) return emptyList()
+        val result = ArrayList<VideoItem>(ids.size)
+        for (id in ids.take(config.searchDetailLimit)) {
+            val item = try {
+                embedVideoOrNull(id)
+            } catch (e: Throwable) {
+                context.log(TAG, "видео $id из индекса не открылось: ${e.message}")
+                null
+            }
+            // Фотопосты в выдачу не берём: играть нечего.
+            if (item == null || item.playUrl.isBlank()) continue
+            result.add(item)
+        }
+        return result
+    }
+
+    private suspend fun searchByHashtags(query: String): Page<VideoItem> {
         val candidates = hashtagCandidates(query)
-        if (candidates.isEmpty()) throw ProviderError.Unknown("Пустой поисковый запрос")
         for (tag in candidates) {
             val items = embedNodeOrNull("/tag/$tag")?.let(::playlistItems).orEmpty()
             if (items.isNotEmpty()) {
@@ -81,19 +136,21 @@ internal class TikTokApi(
         if (clean.isEmpty() || !clean.all { it.isDigit() }) {
             throw ProviderError.Unknown("Некорректный id видео: $id")
         }
-        val node = embedNodeOrNull("/$clean")
+        val item = embedVideoOrNull(clean)
             ?: throw ProviderError.Unknown("Видео $clean не найдено")
-        val videoData = node.optJSONObject("videoData")
-            ?: throw ProviderError.Unknown("Видео $clean не найдено")
-        val infos = videoData.optJSONObject("itemInfos")
-            ?: throw ProviderError.Unknown("Видео $clean не найдено")
-        val item = parseEmbedVideo(infos, videoData.optJSONObject("authorInfos"))
-            ?: throw ProviderError.Unknown("Не удалось разобрать видео $clean")
         if (item.playUrl.isBlank()) {
             // Фотопост: у него есть только обложки, потока нет вообще.
             throw ProviderError.Unknown("У поста $clean нет видео: это фотопост")
         }
         return item
+    }
+
+    /** Общая часть [video] и поиска по индексу: страница `/embed/<id>` → элемент. */
+    private suspend fun embedVideoOrNull(id: String): VideoItem? {
+        val node = embedNodeOrNull("/$id") ?: return null
+        val videoData = node.optJSONObject("videoData") ?: return null
+        val infos = videoData.optJSONObject("itemInfos") ?: return null
+        return parseEmbedVideo(infos, videoData.optJSONObject("authorInfos"))
     }
 
     suspend fun profile(id: String): Author {
@@ -106,15 +163,79 @@ internal class TikTokApi(
         return parseAuthor(user)
     }
 
-    /** Комментарии видео через шлюз: курсор — смещение, то есть номер показанного. */
+    /**
+     * Комментарии видео — напрямую у TikTok.
+     *
+     * `/api/comment/list/` — тот самый эндпоинт, которым пользуется встроенный
+     * плеер TikTok на чужих сайтах, поэтому подписи он не требует. Курсор —
+     * смещение; TikTok возвращает своё значение в `cursor`, и оно точнее нашего,
+     * потому что часть комментариев он отфильтровывает и присылает меньше
+     * запрошенного.
+     *
+     * Если эндпоинт всё же закроют, остаётся шлюз: он отдаёт тот же набор
+     * полей, поэтому разбор общий.
+     */
     suspend fun comments(videoId: String, cursor: String?): Page<Comment> {
         val clean = videoId.trim()
         if (clean.isEmpty() || !clean.all { it.isDigit() }) {
             throw ProviderError.Unknown("Некорректный id видео: $videoId")
         }
         val offset = cursor?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
-        val data = gateway.comments(clean, offset)
 
+        officialComments(clean, offset)?.let { return it }
+        context.log(TAG, "комментарии через TikTok не пришли, иду в шлюз")
+        return gatewayComments(clean, offset)
+    }
+
+    private suspend fun officialComments(videoId: String, offset: Int): Page<Comment>? {
+        val url = config.baseUrl + "/api/comment/list/?aweme_id=" + videoId +
+            "&aid=1988&count=" + config.commentPageSize + "&cursor=" + offset
+        val headers = linkedMapOf(
+            "User-Agent" to config.userAgent,
+            "Accept" to "application/json, text/plain, */*",
+            "Accept-Language" to "${config.language}-${config.region},${config.language};q=0.9",
+            "Referer" to config.baseUrl + "/",
+        )
+        val root = try {
+            val bytes = context.httpGet(url, headers)
+            // Пустое тело — TikTok так «мягко» отказывает; это не ошибка разбора.
+            if (bytes.isEmpty()) return null
+            JSONObject(bytes.toString(Charsets.UTF_8))
+        } catch (e: Throwable) {
+            context.log(TAG, "комментарии TikTok: ${e.message}")
+            return null
+        }
+        if (root.optInt("status_code", -1) != 0) {
+            context.log(TAG, "комментарии TikTok: status_msg=${root.optString("status_msg")}")
+            return null
+        }
+        val array = root.optJSONArray("comments")
+        if (array == null) return null
+
+        val items = ArrayList<Comment>(array.length())
+        for (i in 0 until array.length()) {
+            val entry = array.optJSONObject(i) ?: continue
+            parseOfficialComment(entry)?.let(items::add)
+        }
+        if (items.isEmpty() && offset == 0) {
+            // Видео без комментариев — это нормально, отдаём пустую страницу.
+            return Page(items = emptyList(), nextCursor = null, hasMore = false)
+        }
+
+        val total = root.lng("total")
+        val serverCursor = root.optLong("cursor", 0L).toInt()
+        val nextOffset = if (serverCursor > offset) serverCursor else offset + items.size
+        val hasMore = root.optInt("has_more", 0) == 1 || total > nextOffset
+        return Page(
+            items = items,
+            nextCursor = if (hasMore) nextOffset.toString() else null,
+            hasMore = hasMore,
+        )
+    }
+
+    /** Запасной путь: тот же список, но через шлюз. */
+    private suspend fun gatewayComments(videoId: String, offset: Int): Page<Comment> {
+        val data = gateway.comments(videoId, offset)
         val array = data.optJSONArray("comments")
             ?: return Page(items = emptyList(), nextCursor = null, hasMore = false)
         val items = ArrayList<Comment>(array.length())

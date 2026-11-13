@@ -29,6 +29,22 @@ internal class TikTokGateway(
     /** Свежая порция ленты: шлюз отдаёт случайную выборку, курсора у него нет. */
     suspend fun feed(): List<JSONObject> {
         val root = getJson("/api/feed/list?region=${config.region}&count=${config.feedPageSize}")
+        return items(root)
+    }
+
+    /**
+     * Настоящие результаты поиска TikTok. Путь закрыт Cloudflare для не-браузеров,
+     * поэтому вызывающий обязан уметь обойтись без него — см. [TikTokApi.search].
+     */
+    suspend fun search(query: String, offset: Int): List<JSONObject> {
+        val root = getJson(
+            "/api/feed/search?keywords=" + java.net.URLEncoder.encode(query, "UTF-8") +
+                "&count=${config.feedPageSize}&cursor=$offset"
+        )
+        return items(root)
+    }
+
+    private fun items(root: JSONObject): List<JSONObject> {
         val data = root.optJSONArray("data") ?: return emptyList()
         val result = ArrayList<JSONObject>(data.length())
         for (i in 0 until data.length()) {

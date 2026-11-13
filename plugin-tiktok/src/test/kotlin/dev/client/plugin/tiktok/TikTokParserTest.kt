@@ -140,4 +140,38 @@ class TikTokParserTest {
         assertEquals("tiktok", usernameOf("tiktok"))
         assertTrue(usernameOf("").isEmpty())
     }
+
+    @Test
+    fun `комментарий TikTok разбирается с аватаром в snake_case`() {
+        val json = JSONObject(
+            """
+            {
+              "cid": "7707082245149147934",
+              "aweme_id": "7707063215498399006",
+              "text": "yo tiktok appeal my shi",
+              "create_time": 1794444956,
+              "digg_count": 43,
+              "reply_comment_total": 4,
+              "user": {
+                "uid": "7638965647167685646",
+                "unique_id": "mastantuono23467",
+                "nickname": "mastantuono goat",
+                "avatar_thumb": {
+                  "uri": "tos-maliva-avt-0068/1ecb",
+                  "url_list": ["https://p16-common-sign.tiktokcdn.com/avt.jpg"]
+                }
+              }
+            }
+            """.trimIndent()
+        )
+
+        val comment = assertNotNull(parseOfficialComment(json))
+        assertEquals("7707082245149147934", comment.id)
+        assertEquals("yo tiktok appeal my shi", comment.text)
+        assertEquals(43L, comment.likeCount)
+        assertEquals(4L, comment.replyCount)
+        assertEquals("mastantuono23467", comment.author.username)
+        assertEquals("mastantuono goat", comment.author.displayName)
+        assertEquals("https://p16-common-sign.tiktokcdn.com/avt.jpg", comment.author.avatarUrl)
+    }
 }
