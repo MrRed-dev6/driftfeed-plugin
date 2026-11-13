@@ -104,32 +104,37 @@ internal class TikTokRecommend(
     }
 
     /**
-     * Есть ли в хранилище сессия аккаунта.
+     * Есть ли сессия аккаунта — своя в хранилище или браузерная в банке Android.
      *
-     * Пока клиент её не передаёт, официальная лента не запрашивается вообще:
-     * без сессии TikTok отвечает `{"status_code": 0}`, и подписывать такой
-     * запрос незачем. Как только клиент положит строку под
-     * [TikTokConfig.sessionStorageKey], лента включится сама.
+     * Без сессии официальная лента не запрашивается вообще: без неё TikTok
+     * отвечает `{"status_code": 0}`, и подписывать такой запрос незачем.
      */
     suspend fun hasSession(): Boolean = session() != null
 
     /**
-     * Строка `Cookie` из хранилища плагина, или `null` — вход не выполнялся.
+     * Строка `Cookie` для домена TikTok: сначала из хранилища плагина, потом из
+     * системной банки.
      *
-     * Кладёт её туда клиент после экрана входа (ключ — [TikTokConfig.sessionStorageKey]),
-     * а плагин только читает и ставит заголовок. Так клиент не подставляет
-     * cookie в запросы и не разбирает `Set-Cookie`: он отдаёт значение, как и
-     * задумано с `getStorage`, а формирование запроса целиком остаётся за плагином.
+     * Две дороги — потому что первая появится, только если клиент передумает
+     * и начнёт класть сессию сам ([TikTokConfig.sessionStorageKey]). Вторая
+     * работает уже сейчас и от клиента ничего не требует: [CookieBridge] читает
+     * ту же банку, куда пишет `WebView`, — общий на процесс публичный API.
      *
-     * Содержимое никогда не логируется: это чужая сессия.
+     * Значение никогда не логируется: это чужая сессия.
      */
-    private suspend fun session(): String? =
-        try {
+    private suspend fun session(): String? {
+        val stored = try {
             context.getStorage(config.sessionStorageKey)?.takeIf { it.isNotBlank() }
         } catch (e: Throwable) {
             context.log(TAG, "хранилище сессии недоступно: ${e.message}")
             null
         }
+        if (stored != null) return stored
+
+        val browser = CookieBridge.read(config.baseUrl + "/")
+        if (browser != null) context.log(TAG, "сессия взята из браузера приложения")
+        return browser
+    }
 
     /** Страница ленты и её место в выдаче. */
     internal data class Result(

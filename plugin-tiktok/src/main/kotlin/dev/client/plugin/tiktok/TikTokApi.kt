@@ -40,37 +40,43 @@ internal class TikTokApi(
      * Лента.
      *
      * Сначала официальная — `/api/recommend/item_list/`, то есть настоящие
-     * рекомендации «Для тебя» с честным курсором. Ей нужна подпись
-     * `X-Gnarly` ([TikTokSigner]) и сессия вошедшего аккаунта: подпись плагин
-     * считает сам, а сессию читает из своего хранилища ([TikTokRecommend]).
+     * рекомендации «Для тебя» с честным курсором. Ей нужны две вещи: подпись
+     * `X-Gnarly` ([TikTokSigner]) и сессия вошедшего аккаунта. Обе плагин
+     * достаёт сам, без участия клиента: подпись считает в `evalJs`, сессию
+     * читает из системной банки Android ([CookieBridge]) — той, куда пишет
+     * `WebView`, если пользователь где-то вошёл.
      *
-     * Сессию в хранилище кладёт клиент, и сейчас он этого не делает — по
-     * своему решению. Поэтому [TikTokRecommend.hasSession] обычно отвечает
-     * `false`, и запрос к официальной ленте не отправляется вовсе: подписывать
-     * его, зная, что ответ будет `{"status_code": 0}`, — это лишние 3 мс и
-     * лишний запрос на каждый старт. Путь остаётся рабочим на случай, если
-     * клиент передумает: тогда он появится сам, без правок в плагине.
+     * Если сессии нет, запрос не отправляется даже один раз: TikTok ответил бы
+     * `{"status_code": 0}`, и подписывать его — это 3 мс и HTTP-вызов в пустоту.
+     * Решение запоминается до конца сессии.
      *
      * Курсор различает источники: официальный идёт с префиксом `fyp:`, у шлюза
      * это просто номер страницы. Так следующая страница не переедет из одного
      * источника в другой.
      */
     suspend fun feed(cursor: String?): Page<VideoItem> {
-        if (feedSource != FeedSource.GATEWAY && recommend.hasSession()) {
+        if (feedSource != FeedSource.GATEWAY) {
             val start = officialCursor(cursor)
             if (start != null) {
-                val result = recommend.page(start)
-                if (result != null && result.items.isNotEmpty()) {
-                    feedSource = FeedSource.OFFICIAL
-                    return Page(
-                        items = result.items,
-                        nextCursor = if (result.hasMore) OFFICIAL_CURSOR + result.cursor else null,
-                        hasMore = result.hasMore,
-                    )
-                }
-                if (start == 0) {
-                    context.log(TAG, "официальная лента не пришла — дальше беру шлюз")
-                    feedSource = FeedSource.GATEWAY
+                if (!recommend.hasSession()) {
+                    if (start == 0) {
+                        context.log(TAG, "сессии аккаунта нет — лента из шлюза")
+                        feedSource = FeedSource.GATEWAY
+                    }
+                } else {
+                    val result = recommend.page(start)
+                    if (result != null && result.items.isNotEmpty()) {
+                        feedSource = FeedSource.OFFICIAL
+                        return Page(
+                            items = result.items,
+                            nextCursor = if (result.hasMore) OFFICIAL_CURSOR + result.cursor else null,
+                            hasMore = result.hasMore,
+                        )
+                    }
+                    if (start == 0) {
+                        context.log(TAG, "официальная лента не пришла — дальше беру шлюз")
+                        feedSource = FeedSource.GATEWAY
+                    }
                 }
             }
         }
