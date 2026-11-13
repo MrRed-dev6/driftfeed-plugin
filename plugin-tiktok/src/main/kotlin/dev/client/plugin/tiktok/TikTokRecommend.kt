@@ -9,10 +9,13 @@ import org.json.JSONObject
  * алгоритм «Для тебя».
  *
  * В отличие от ленты шлюза ([TikTokGateway]) здесь есть и персональные
- * рекомендации, и настоящая постраничность (`cursor`, `hasMore`). Но запрос
- * обязан быть подписан `X-Gnarly` ([TikTokSigner]) и, главное, идти с cookie
- * вошедшего аккаунта: без них TikTok отвечает `{"status_code": 0}` — формально
- * успехом и пустым списком.
+ * рекомендации, и настоящая постраничность (`cursor`, `hasMore`).
+ *
+ * Главное условие — cookie вошедшего аккаунта: без них TikTok отвечает
+ * `{"status_code": 0}`, то есть формально успехом и пустым списком. Проверено,
+ * что этот ответ одинаков с подписью `X-Gnarly` и без неё, поэтому подпись
+ * ([TikTokSigner]) уходит как страховка, а не как пропуск: её отсутствие
+ * запрос не отменяет.
  *
  * Cookie плагину не передаются контрактом, их подставляет клиент в свой
  * `httpGet`. Пока он этого не делает, [page] вернёт `null` и [TikTokApi]
@@ -34,7 +37,10 @@ internal class TikTokRecommend(
             region = config.region,
             language = config.language,
         )
-        val signature = signer.sign(query, config.userAgent) ?: return null
+        // Подпись — страховка, а не пропуск: без cookie эндпоинт отвечает пусто
+        // и с ней, и без неё. Если подписать не вышло, запрос всё равно уходит —
+        // терять целый источник из-за необязательного заголовка незачем.
+        val signature = signer.sign(query, config.userAgent)
 
         val url = config.baseUrl + config.recommendPath + "?" + query
         val body = try {
@@ -85,17 +91,20 @@ internal class TikTokRecommend(
         return Result(items = items, cursor = next, hasMore = hasMore)
     }
 
-    private fun headers(signature: String): Map<String, String> = linkedMapOf(
+    private fun headers(signature: String?): Map<String, String> = linkedMapOf<String, String>(
         "User-Agent" to config.userAgent,
         "Accept" to "application/json, text/plain, */*",
         "Accept-Language" to "${config.language}-${config.region},${config.language};q=0.9",
         "Referer" to config.baseUrl + "/foryou",
-        "X-Gnarly" to signature,
         "X-Requested-With" to "XMLHttpRequest",
         "Sec-Fetch-Dest" to "empty",
         "Sec-Fetch-Mode" to "cors",
         "Sec-Fetch-Site" to "same-origin",
-    )
+    ).apply {
+        // Именно так делает браузер. Сегодня эндпоинт отвечает и без заголовка,
+        // но у сессии с аккаунтом проверка может включиться — заголовок дешёвый.
+        if (signature != null) put("X-Gnarly", signature)
+    }
 
     /** Страница ленты и её место в выдаче. */
     internal data class Result(
