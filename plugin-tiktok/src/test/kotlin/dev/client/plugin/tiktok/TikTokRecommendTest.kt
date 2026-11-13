@@ -65,4 +65,24 @@ class TikTokRecommendTest {
         assertFalse(" " in query, "пробел сломает подпись: $query")
         assertFalse("+" in query, "плюс вместо %20 сломает подпись: $query")
     }
+
+    @Test
+    fun `вход распознаётся по sessionid`() {
+        assertTrue(isSignedIn("ttwid=1%7Cabc; sessionid=deadbeef; msToken=xyz"))
+        assertTrue(isSignedIn("sessionid=deadbeef"))
+        // Пробелы вокруг разделителя getCookie иногда ставит.
+        assertTrue(isSignedIn("ttwid=1;  sessionid=deadbeef ;tt_webid_v2=7"))
+    }
+
+    @Test
+    fun `анонимные cookie за вход не считаются`() {
+        assertFalse(isSignedIn("ttwid=1%7Cabc; msToken=xyz; tt_webid_v2=7"))
+        assertFalse(isSignedIn(""))
+        // Другая cookie с тем же началом имени — не вход.
+        assertFalse(isSignedIn("sessionid_ss=deadbeef; sessionid_backup=x"))
+        // Имя cookie регистрозависимо.
+        assertFalse(isSignedIn("SessionID=deadbeef"))
+        // Пустое значение — тоже не вход.
+        assertFalse(isSignedIn("sessionid=; ttwid=1"))
+    }
 }

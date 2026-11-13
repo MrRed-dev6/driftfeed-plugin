@@ -17,12 +17,15 @@ import org.json.JSONObject
  * ([TikTokSigner]) уходит как страховка, а не как пропуск: её отсутствие
  * запрос не отменяет.
  *
- * Сессию плагин держит сам: читает строку cookie из своего хранилища
- * (`getStorage("cookies:www.tiktok.com")`) и сам ставит заголовок `Cookie`.
- * Значение туда кладёт клиент после входа — но сейчас он этого не делает по
- * своему решению, поэтому [hasSession] отвечает `false` и [TikTokApi] ленту
- * отсюда не спрашивает вовсе. Код остаётся рабочим: появится строка в
- * хранилище — включится без правок.
+ * Сессию плагин берёт сам ([session]) и сам ставит заголовок `Cookie`. Две
+ * дороги: хранилище плагина — на случай, если клиент когда-нибудь начнёт
+ * класть строку туда, — и банка Android ([CookieBridge]), куда пишет `WebView`.
+ * Вторая работает без участия клиента: ему достаточно не мешать.
+ *
+ * Пока строки с `sessionid` нет ни там, ни там, [hasSession] отвечает `false`,
+ * и [TikTokApi] не отправляет запрос вовсе: анонимные cookie (`ttwid`,
+ * `msToken`) TikTok принимает, но лента от этого не появляется — проверено,
+ * ответ тот же `{"status_code": 0}`.
  */
 internal class TikTokRecommend(
     private val context: ProviderContext,
@@ -34,8 +37,8 @@ internal class TikTokRecommend(
     /**
      * Одна страница ленты. `null` — не вышло; это нормальный запасной путь.
      *
-     * Сессию плагин берёт из своего хранилища сам ([session]) и сам ставит
-     * заголовок `Cookie` — клиент в формировании запроса не участвует.
+     * Сессию плагин берёт сам ([session]) и сам ставит заголовок `Cookie` —
+     * клиент в формировании запроса не участвует.
      */
     suspend fun page(cursor: Int): Result? {
         val query = recommendQuery(
@@ -77,8 +80,8 @@ internal class TikTokRecommend(
         val array = root.optJSONArray("itemList")
         if (array == null) {
             // Именно этот ответ приходит без сессии: поля нет вовсе.
-            if (cookie == null) {
-                context.log(TAG, "официальная лента пуста — в хранилище нет сессии аккаунта")
+            if (cookie == null || !isSignedIn(cookie)) {
+                context.log(TAG, "официальная лента пуста — сессии аккаунта нет")
             } else {
                 context.log(TAG, "официальная лента пуста — сессия есть, но TikTok её не принял")
             }
@@ -104,12 +107,13 @@ internal class TikTokRecommend(
     }
 
     /**
-     * Есть ли сессия аккаунта — своя в хранилище или браузерная в банке Android.
+     * Есть ли сессия вошедшего аккаунта — а не просто cookie.
      *
-     * Без сессии официальная лента не запрашивается вообще: без неё TikTok
-     * отвечает `{"status_code": 0}`, и подписывать такой запрос незачем.
+     * Проверяется `sessionid`: анонимные cookie TikTok выдаёт сам при первом
+     * заходе, и запрос с ними всё равно вернёт пустую ленту. Отправлять его,
+     * зная ответ, — 3 мс подписи и HTTP-вызов в пустоту на каждом старте.
      */
-    suspend fun hasSession(): Boolean = session() != null
+    suspend fun hasSession(): Boolean = session()?.let { isSignedIn(it) } ?: false
 
     /**
      * Строка `Cookie` для домена TikTok: сначала из хранилища плагина, потом из
@@ -118,9 +122,10 @@ internal class TikTokRecommend(
      * Две дороги — потому что первая появится, только если клиент передумает
      * и начнёт класть сессию сам ([TikTokConfig.sessionStorageKey]). Вторая
      * работает уже сейчас и от клиента ничего не требует: [CookieBridge] читает
-     * ту же банку, куда пишет `WebView`, — общий на процесс публичный API.
+     * ту же банку, куда пишет `WebView`.
      *
-     * Значение никогда не логируется: это чужая сессия.
+     * Значение никогда не логируется: это чужая сессия. В лог уходит только
+     * вывод — откуда строка и есть ли в ней вход.
      */
     private suspend fun session(): String? {
         val stored = try {
@@ -129,11 +134,26 @@ internal class TikTokRecommend(
             context.log(TAG, "хранилище сессии недоступно: ${e.message}")
             null
         }
-        if (stored != null) return stored
+        if (stored != null) {
+            context.log(TAG, if (isSignedIn(stored)) "сессия взята из хранилища" else "в хранилище только анонимные cookie")
+            return stored
+        }
 
-        val browser = CookieBridge.read(config.baseUrl + "/")
-        if (browser != null) context.log(TAG, "сессия взята из браузера приложения")
-        return browser
+        val browser = CookieBridge.read(config.baseUrl + "/")?.takeIf { it.isNotBlank() }
+        return when {
+            browser == null -> {
+                context.log(TAG, "банка браузера пуста — входа в TikTok не было")
+                null
+            }
+            isSignedIn(browser) -> {
+                context.log(TAG, "сессия взята из браузера приложения")
+                browser
+            }
+            else -> {
+                context.log(TAG, "в банке браузера только анонимные cookie — входа нет")
+                browser
+            }
+        }
     }
 
     /** Страница ленты и её место в выдаче. */
@@ -149,11 +169,27 @@ internal class TikTokRecommend(
 }
 
 /**
+ * Есть ли в строке cookie вход в аккаунт: именно `sessionid`, а не
+ * `sessionid_ss` и не анонимные `ttwid`/`msToken`.
+ *
+ * Пробелы вокруг имён TikTok не ставит, но `getCookie` может отдать строку с
+ * ними после разделителя, поэтому `trim`. Регистр важен: имена cookie
+ * регистрозависимы.
+ */
+internal fun isSignedIn(cookies: String): Boolean =
+    cookies.split(';').any { pair ->
+        val eq = pair.indexOf('=')
+        eq > 0 &&
+            pair.substring(0, eq).trim() == "sessionid" &&
+            pair.substring(eq + 1).trim().isNotEmpty()
+    }
+
+/**
  * Заголовки запроса к официальной ленте.
  *
- * `Cookie` ставит сам плагин — из своего хранилища, а не клиент: см.
- * [TikTokRecommend.session]. `X-Gnarly` добавляется, только если подпись
- * получилась, — сегодня эндпоинт отвечает и без неё.
+ * `Cookie` ставит сам плагин — из банки процесса или своего хранилища, а не
+ * клиент: см. [TikTokRecommend.session]. `X-Gnarly` добавляется, только если
+ * подпись получилась, — сегодня эндпоинт отвечает и без неё.
  */
 internal fun recommendHeaders(
     config: TikTokConfig,
