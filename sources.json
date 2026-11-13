@@ -1,0 +1,13 @@
+{
+  "id": "tiktok",
+  "displayName": "TikTok",
+  "version": 11,
+  "contractMajor": 1,
+  "minClientVersion": 1,
+  "entryClass": "dev.client.plugin.tiktok.TikTokProviderFactory",
+  "downloadUrls": [
+    "https://github.com/MrRed-dev6/driftfeed-plugin/releases/download/v3/provider-tiktok.jar"
+  ],
+  "sha256": "015748c099aabc99f4558f02aa8d7b74ba17c5a13ef7ceb51b5b601082d3c505",
+  "signatureBase64": "N7vesUQjlQPJ+C1jAF/6CaiZZ3xLxKnEO1eJWLR+Je05gp6TIfnjH/5u1/I39lScSeBZCDJOpdcss4lHhPEgDA=="
+}
