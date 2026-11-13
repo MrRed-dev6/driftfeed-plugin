@@ -157,6 +157,30 @@ internal fun parseGatewayItem(json: JSONObject): VideoItem? {
     )
 }
 
+/**
+ * Элемент официальной ленты (`itemList` из `/api/recommend/item_list/`).
+ *
+ * Устроен иначе, чем всё остальное: описание в `desc`, статистика в отдельном
+ * объекте `stats` (`diggCount`, `commentCount`), а ссылка на поток — в `video`
+ * (`playAddr`, `downloadAddr`). Фотопост отличается тем, что `video` есть, а
+ * `playAddr` в нём пустой: тогда [VideoItem.playUrl] остаётся пустым, и
+ * вызывающий такой элемент отбрасывает.
+ */
+internal fun parseFeedItem(json: JSONObject): VideoItem? {
+    val id = json.str("id", "aweme_id", "awemeId") ?: return null
+    val video = json.obj("video")
+    val stats = json.obj("stats", "statistics")
+    return VideoItem(
+        id = id,
+        playUrl = video?.firstUrl("playAddr", "play_addr", "downloadAddr", "download_addr") ?: "",
+        coverUrl = video?.firstUrl("cover", "originCover", "dynamicCover", "origin_cover"),
+        description = json.str("desc", "description") ?: "",
+        author = parseAuthor(json.obj("author", "authorInfo")),
+        likeCount = stats?.lng("diggCount", "digg_count") ?: 0L,
+        commentCount = stats?.lng("commentCount", "comment_count") ?: 0L,
+    )
+}
+
 /** Комментарий шлюза: `user` — тот же автор, `digg_count` — лайки, `reply_total` — ответы. */
 internal fun parseComment(json: JSONObject): Comment? {
     val id = json.str("id", "cid") ?: return null

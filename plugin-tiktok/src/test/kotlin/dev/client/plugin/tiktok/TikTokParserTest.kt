@@ -134,6 +134,73 @@ class TikTokParserTest {
     }
 
     @Test
+    fun `элемент официальной ленты разбирается со статистикой из stats`() {
+        val json = JSONObject(
+            """
+            {
+              "id": "7707063215498399006",
+              "desc": "кот проверяет, кто тут главный #cats",
+              "createTime": 1794444956,
+              "author": {
+                "id": "7638965647167685646",
+                "uniqueId": "catlover",
+                "nickname": "Cat Lover",
+                "avatarThumb": "https://p16-sign.tiktokcdn.com/avt.jpg"
+              },
+              "stats": {
+                "diggCount": 12043,
+                "commentCount": 317,
+                "playCount": 240000,
+                "shareCount": 88
+              },
+              "video": {
+                "id": "7707063215498399006",
+                "duration": 15,
+                "cover": "https://p16-sign.tiktokcdn.com/cover.jpg",
+                "originCover": "https://p16-sign.tiktokcdn.com/origin.jpg",
+                "playAddr": "https://v16-webapp.tiktok.com/video.mp4"
+              }
+            }
+            """.trimIndent()
+        )
+
+        val item = assertNotNull(parseFeedItem(json))
+        assertEquals("7707063215498399006", item.id)
+        assertEquals("https://v16-webapp.tiktok.com/video.mp4", item.playUrl)
+        assertEquals("https://p16-sign.tiktokcdn.com/cover.jpg", item.coverUrl)
+        assertEquals("кот проверяет, кто тут главный #cats", item.description)
+        assertEquals(12043L, item.likeCount)
+        assertEquals(317L, item.commentCount)
+        assertEquals("catlover", item.author.username)
+        assertEquals("Cat Lover", item.author.displayName)
+        assertEquals("https://p16-sign.tiktokcdn.com/avt.jpg", item.author.avatarUrl)
+    }
+
+    @Test
+    fun `фотопост официальной ленты приходит без ссылки на поток`() {
+        val json = JSONObject(
+            """
+            {
+              "id": "7707063215498399007",
+              "desc": "фотопост",
+              "author": {"uniqueId": "catlover", "nickname": "Cat Lover"},
+              "stats": {"diggCount": 5, "commentCount": 0},
+              "video": {"cover": "https://cdn/cover.jpg"}
+            }
+            """.trimIndent()
+        )
+
+        val item = assertNotNull(parseFeedItem(json))
+        assertEquals("", item.playUrl)
+        assertEquals(5L, item.likeCount)
+    }
+
+    @Test
+    fun `элемент без id не разбирается`() {
+        assertNull(parseFeedItem(JSONObject("""{"desc":"ничего"}""")))
+    }
+
+    @Test
     fun `ник вытаскивается из ссылки и собаки`() {
         assertEquals("tiktok", usernameOf("@TikTok"))
         assertEquals("tiktok", usernameOf("https://www.tiktok.com/@tiktok"))

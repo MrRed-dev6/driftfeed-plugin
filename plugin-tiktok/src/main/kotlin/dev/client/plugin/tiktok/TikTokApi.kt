@@ -11,11 +11,11 @@ import org.json.JSONObject
 /**
  * Источник данных TikTok: две дороги, каждая для того, что ей доступно.
  *
- *  - сам TikTok — профиль, видео по id, страница хештега (поиск) и
- *    комментарии (`/api/comment/list/` открыт без подписи, им же пользуется
- *    встроенный плеер на чужих сайтах);
- *  - шлюз `tikwm.com` ([TikTokGateway]) — только лента: её у TikTok нельзя
- *    взять без подписи, а в `/embed` её нет по устройству страницы.
+ *  - сам TikTok — лента ([TikTokRecommend]), профиль, видео по id, страница
+ *    хештега и комментарии (`/api/comment/list/` открыт без подписи, им же
+ *    пользуется встроенный плеер на чужих сайтах);
+ *  - шлюз `tikwm.com` ([TikTokGateway]) — запасная лента на случай, когда у
+ *    официальной нет аккаунта, и запасные комментарии.
  *
  * Ничего не кэширует: запрос → разбор → Page. Ошибки переводит в ProviderError,
  * чтобы клиент показал осмысленный текст.
@@ -27,13 +27,65 @@ internal class TikTokApi(
 
     private val gateway: TikTokGateway = TikTokGateway(context, config)
     private val searchEngine: TikTokSearch = TikTokSearch(context, config)
+    private val recommend: TikTokRecommend = TikTokRecommend(context, config)
 
     /**
-     * Лента. Шлюз отдаёт случайную порцию, курсора у него нет, поэтому курсор
-     * здесь — просто номер страницы: прокрутка не упирается в конец, а каждая
-     * следующая порция — новые видео.
+     * Откуда брать ленту. Решается один раз за сессию и запоминается: если
+     * официальная лента не отдала ни одного элемента (нет cookie аккаунта),
+     * незачем подписывать и ждать её на каждой странице.
+     */
+    private var feedSource = FeedSource.UNKNOWN
+
+    /**
+     * Лента.
+     *
+     * Сначала официальная — `/api/recommend/item_list/`, то есть настоящие
+     * рекомендации «Для тебя» с честным курсором. Она требует подписи
+     * `X-Gnarly` ([TikTokSigner]) и cookie вошедшего аккаунта: подпись плагин
+     * считает сам, а cookie подставляет клиент в `httpGet`. Пока аккаунта нет,
+     * TikTok отвечает пустым списком — тогда и до конца сессии лента берётся из
+     * шлюза, как раньше.
+     *
+     * Курсор различает источники: официальный идёт с префиксом `fyp:`, у шлюза
+     * это просто номер страницы. Так следующая страница не переедет из одного
+     * источника в другой.
      */
     suspend fun feed(cursor: String?): Page<VideoItem> {
+        if (feedSource != FeedSource.GATEWAY) {
+            val start = officialCursor(cursor)
+            if (start != null) {
+                val result = recommend.page(start)
+                if (result != null && result.items.isNotEmpty()) {
+                    feedSource = FeedSource.OFFICIAL
+                    return Page(
+                        items = result.items,
+                        nextCursor = if (result.hasMore) OFFICIAL_CURSOR + result.cursor else null,
+                        hasMore = result.hasMore,
+                    )
+                }
+                if (start == 0) {
+                    context.log(TAG, "официальная лента не пришла — дальше беру шлюз")
+                    feedSource = FeedSource.GATEWAY
+                }
+            }
+        }
+        return gatewayFeed(cursor)
+    }
+
+    /** Номер страницы в официальной ленте, или null — курсор не её. */
+    private fun officialCursor(cursor: String?): Int? {
+        val token = cursor?.trim().orEmpty()
+        if (token.isEmpty()) return 0
+        if (!token.startsWith(OFFICIAL_CURSOR)) return null
+        return token.removePrefix(OFFICIAL_CURSOR).toIntOrNull()?.takeIf { it >= 0 }
+    }
+
+    /**
+     * Лента шлюза. Он отдаёт случайную порцию популярного по региону, курсора у
+     * него нет, поэтому курсор здесь — просто номер страницы: прокрутка не
+     * упирается в конец, а каждая следующая порция — новые видео.
+     */
+    private suspend fun gatewayFeed(cursor: String?): Page<VideoItem> {
         val page = cursor?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
         val raw = gateway.feed()
         val items = ArrayList<VideoItem>(raw.size)
@@ -317,7 +369,16 @@ internal class TikTokApi(
         return result
     }
 
+    /** Чью ленту ждать: пока не решили — пробуем официальную. */
+    private enum class FeedSource { UNKNOWN, OFFICIAL, GATEWAY }
+
     private companion object {
         const val TAG = "TikTokApi"
+
+        /**
+         * Префикс курсора официальной ленты. Он отделяет её от номеров страниц
+         * шлюза, чтобы вторая страница не уехала в другой источник.
+         */
+        const val OFFICIAL_CURSOR = "fyp:"
     }
 }

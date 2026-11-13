@@ -19,11 +19,17 @@ internal data class TikTokConfig(
      */
     val embedPath: String = "/embed",
     /**
-     * Публичный шлюз, у которого есть лента и комментарии: у самого TikTok эти
-     * два раздела закрыты подписью браузерного SDK, а `/embed` их не отдаёт.
+     * Публичный шлюз, у которого есть лента: у самого TikTok она закрыта
+     * подписью браузерного SDK, а `/embed` её не отдаёт.
      */
     val gatewayUrl: String = "https://www.tikwm.com",
-    /** Сколько элементов просить у шлюза за раз: больше 30 он не отдаёт. */
+    /**
+     * Официальная лента TikTok. Работает только с подписью `X-Gnarly` и cookie
+     * вошедшего аккаунта; без cookie отвечает пустым списком, и тогда лента
+     * берётся из шлюза — см. [TikTokApi.feed].
+     */
+    val recommendPath: String = "/api/recommend/item_list/",
+    /** Сколько элементов просить за раз: шлюз больше 30 не отдаёт. */
     val feedPageSize: Int = 20,
     val commentPageSize: Int = 20,
     /**
