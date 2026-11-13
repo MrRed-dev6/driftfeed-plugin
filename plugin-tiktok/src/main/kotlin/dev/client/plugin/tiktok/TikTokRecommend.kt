@@ -17,13 +17,14 @@ import org.json.JSONObject
  * ([TikTokSigner]) уходит как страховка, а не как пропуск: её отсутствие
  * запрос не отменяет.
  *
- * Сессию плагин берёт сам ([session]) и сам ставит заголовок `Cookie`. Две
- * дороги: хранилище плагина — на случай, если клиент когда-нибудь начнёт
- * класть строку туда, — и банка Android ([CookieBridge]), куда пишет `WebView`.
- * Вторая работает без участия клиента: ему достаточно не мешать.
+ * Сессию плагин берёт сам ([session]) и сам ставит заголовок `Cookie`. Три
+ * источника по порядку: хранилище плагина (туда же кладёт результат импорт),
+ * банка Android ([CookieBridge]), куда пишет `WebView`, и ссылка
+ * [TikTokConfig.sessionImportUrl] — ручной перенос, когда входить в приложении
+ * негде. Клиент во всём этом не участвует: он заморожен и не меняется.
  *
- * Пока строки с `sessionid` нет ни там, ни там, [hasSession] отвечает `false`,
- * и [TikTokApi] не отправляет запрос вовсе: анонимные cookie (`ttwid`,
+ * Пока строки с `sessionid` нет ни в одном источнике, [hasSession] отвечает
+ * `false`, и [TikTokApi] не отправляет запрос вовсе: анонимные cookie (`ttwid`,
  * `msToken`) TikTok принимает, но лента от этого не появляется — проверено,
  * ответ тот же `{"status_code": 0}`.
  */
@@ -33,6 +34,13 @@ internal class TikTokRecommend(
 ) {
 
     private val signer = TikTokSigner(context)
+
+    /**
+     * Найденная строка cookie и признак, что поиск уже сделан. Живут столько же,
+     * сколько объект провайдера, то есть один запуск приложения: см. [session].
+     */
+    private var sessionCache: String? = null
+    private var sessionResolved = false
 
     /**
      * Одна страница ленты. `null` — не вышло; это нормальный запасной путь.
@@ -116,44 +124,118 @@ internal class TikTokRecommend(
     suspend fun hasSession(): Boolean = session()?.let { isSignedIn(it) } ?: false
 
     /**
-     * Строка `Cookie` для домена TikTok: сначала из хранилища плагина, потом из
-     * системной банки.
+     * Строка `Cookie` для домена TikTok. Порядок источников:
      *
-     * Две дороги — потому что первая появится, только если клиент передумает
-     * и начнёт класть сессию сам ([TikTokConfig.sessionStorageKey]). Вторая
-     * работает уже сейчас и от клиента ничего не требует: [CookieBridge] читает
-     * ту же банку, куда пишет `WebView`.
+     * 1. банка процесса ([CookieBridge]) — бесплатно и всегда свежая: если в
+     *    приложении где-то открывался `tiktok.com` и пользователь вошёл;
+     * 2. ссылка [TikTokConfig.sessionImportUrl], если задана: пока она жива,
+     *    строка забирается заново при каждом запуске — так обновляется сессия,
+     *    которую пришлось переносить вручную;
+     * 3. хранилище плагина — то, что осталось от прошлых импортов.
+     *
+     * Импорт стоит выше хранилища намеренно: истёкшая сессия в хранилище иначе
+     * блокировала бы обновление — в ней есть `sessionid`, а рабочий ли он,
+     * по строке не видно.
+     *
+     * Результат запоминается до конца жизни плагина: строка не меняется, а
+     * чтение банки — это обращение к `CookieManager`, иногда с переходом на
+     * главный поток. Обратная сторона — вход, сделанный после запуска, увидится
+     * только со следующего запуска приложения.
      *
      * Значение никогда не логируется: это чужая сессия. В лог уходит только
      * вывод — откуда строка и есть ли в ней вход.
      */
     private suspend fun session(): String? {
-        val stored = try {
-            context.getStorage(config.sessionStorageKey)?.takeIf { it.isNotBlank() }
+        if (sessionResolved) return sessionCache
+
+        val browser = try {
+            CookieBridge.read(config.baseUrl + "/")?.takeIf { it.isNotBlank() }
         } catch (e: Throwable) {
-            context.log(TAG, "хранилище сессии недоступно: ${e.message}")
             null
         }
-        if (stored != null) {
-            context.log(TAG, if (isSignedIn(stored)) "сессия взята из хранилища" else "в хранилище только анонимные cookie")
-            return stored
+        if (browser != null && isSignedIn(browser)) {
+            context.log(TAG, "сессия взята из браузера приложения")
+            return remember(browser)
         }
 
-        val browser = CookieBridge.read(config.baseUrl + "/")?.takeIf { it.isNotBlank() }
-        return when {
-            browser == null -> {
-                context.log(TAG, "банка браузера пуста — входа в TikTok не было")
-                null
-            }
-            isSignedIn(browser) -> {
-                context.log(TAG, "сессия взята из браузера приложения")
-                browser
-            }
-            else -> {
-                context.log(TAG, "в банке браузера только анонимные cookie — входа нет")
-                browser
-            }
+        importSession()?.let { return remember(it) }
+
+        val stored = readStored()
+        if (stored != null && isSignedIn(stored)) {
+            context.log(TAG, "сессия взята из хранилища")
+            return remember(stored)
         }
+
+        // Входа нет вовсе. Анонимные cookie не выбрасываем: с ними запросы к
+        // открытым ручкам выглядят обычнее, чем совсем без них.
+        val anonymous = stored ?: browser
+        if (anonymous == null) {
+            context.log(
+                TAG,
+                if (config.sessionImportUrl.isBlank()) {
+                    "сессии аккаунта нет: банка пуста, импорт не настроен"
+                } else {
+                    "сессии аккаунта нет: банка пуста, импорт не дал строки"
+                },
+            )
+        } else if (stored != null) {
+            context.log(TAG, "в хранилище только анонимные cookie — входа нет")
+        } else {
+            context.log(TAG, "в банке браузера только анонимные cookie — входа нет")
+        }
+        return remember(anonymous)
+    }
+
+    /** Запомнить найденное: см. «до конца жизни плагина» в [session]. */
+    private fun remember(cookie: String?): String? {
+        sessionCache = cookie
+        sessionResolved = true
+        return cookie
+    }
+
+    private suspend fun readStored(): String? =
+        try {
+            context.getStorage(config.sessionStorageKey)?.takeIf { it.isNotBlank() }
+        } catch (e: Throwable) {
+            context.log(TAG, "хранилище сессии недоступно: ${e.javaClass.simpleName}")
+            null
+        }
+
+    /**
+     * Строка cookie по ссылке импорта, или `null` — импорт выключен, не удался
+     * или по ссылке не сессия.
+     *
+     * Запрашивается при каждом запуске, пока ссылка задана: так сессия
+     * обновляется без нового релиза плагина. Успешная строка ложится в
+     * хранилище и остаётся там, когда ссылку удалят.
+     *
+     * Причина отказа пишется без адреса и без текста ответа: и то, и другое
+     * может быть секретом.
+     */
+    private suspend fun importSession(): String? {
+        val url = config.sessionImportUrl.trim()
+        if (url.isEmpty()) return null
+
+        val body = try {
+            context.httpGet(url, emptyMap()).toString(Charsets.UTF_8)
+        } catch (e: Throwable) {
+            context.log(TAG, "импорт сессии: запрос не удался (${e.javaClass.simpleName})")
+            return null
+        }
+        val cookie = body.trim()
+        if (!isSignedIn(cookie)) {
+            context.log(TAG, "импорт сессии: по ссылке не строка cookie с sessionid")
+            return null
+        }
+
+        try {
+            context.setStorage(config.sessionStorageKey, cookie)
+        } catch (e: Throwable) {
+            // Не беда: строку всё равно вернём и ей же воспользуемся сейчас.
+            context.log(TAG, "импорт сессии: не сохранился (${e.javaClass.simpleName})")
+        }
+        context.log(TAG, "сессия импортирована по ссылке")
+        return cookie
     }
 
     /** Страница ленты и её место в выдаче. */
