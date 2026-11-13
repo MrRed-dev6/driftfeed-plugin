@@ -51,8 +51,8 @@ jobs:
           bash ./tools/build-plugin.sh
           rm -f tools/plugin-signing-key.pem
 
-      # sources.json — ассет релиза: у latest/download/sources.json постоянный
-      # адрес, коммитить манифест в ветку не нужно.
+      # Основной адрес манифеста — ассет релиза: у latest/download/sources.json
+      # постоянный URL, и он всегда указывает на последнюю версию.
       - name: Публикация релиза
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -60,6 +60,28 @@ jobs:
           files: |
             dist/provider-tiktok.jar
             dist/sources.json
+
+      # Зеркало в ветке — второй адрес в клиентском MIRRORS. Нужно ровно для
+      # первого запуска: пока релиза нет, latest/download отвечает 404, а
+      # sources.json в main уже лежит. Подписать манифест может только CI
+      # (ключ в Secrets), поэтому в ветку его кладёт CI, а не человек.
+      # Пуш в main перезапустит этот workflow, но уже без тега — шаг пропустится.
+      - name: Зеркало манифеста в main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          # В checkout по тегу локальной ветки main нет — создаём её от origin/main.
+          git checkout -B main origin/main
+          cp dist/sources.json sources.json
+          git add sources.json
+          if git diff --cached --quiet; then
+            echo "манифест не изменился"
+            exit 0
+          fi
+          git commit -m "sources.json: ${GITHUB_REF_NAME}"
+          git push origin main
 
       - uses: actions/upload-artifact@v4
         if: always()
