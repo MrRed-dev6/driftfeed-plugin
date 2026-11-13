@@ -12,7 +12,7 @@ import dev.client.provider.VideoItem
  * Источник данных TikTok для клиента driftfeed.
  *
  * Лента — официальная (`/api/recommend/item_list/` с подписью `X-Gnarly` и
- * cookie аккаунта), а если аккаунта нет — шлюз. Профиль, видео и хештеги идут
+ * сессией аккаунта), а если сессии нет — шлюз. Профиль, видео и хештеги идут
  * со страниц `/embed`, комментарии — с открытого `/api/comment/list/`. Поиск —
  * каскад из трёх путей, см. [TikTokApi.search]. Возможности объявлены по факту,
  * а не «на всякий случай»: клиент скрывает в интерфейсе то, чего провайдер не
@@ -32,7 +32,7 @@ class TikTokProvider(private val context: ProviderContext) : Provider {
     override val displayName: String = "TikTok"
 
     override val capabilities: Capabilities = Capabilities(
-        // Лента: официальные рекомендации при наличии cookie аккаунта, иначе шлюз.
+        // Лента: официальные рекомендации при наличии сессии аккаунта, иначе шлюз.
         feed = true,
         // Поиск: настоящие результаты TikTok через шлюз, затем индекс поисковика,
         // затем хештег из запроса — см. TikTokApi.search.

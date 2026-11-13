@@ -43,6 +43,22 @@ class TikTokRecommendTest {
     }
 
     @Test
+    fun `cookie и подпись попадают в заголовки, а без них заголовков нет`() {
+        val config = TikTokConfig()
+        val cookie = "sessionid=abc; ttwid=def"
+
+        val withBoth = recommendHeaders(config, signature = "sig", cookie = cookie)
+        assertEquals("sig", withBoth["X-Gnarly"])
+        assertEquals(cookie, withBoth["Cookie"])
+
+        val bare = recommendHeaders(config, signature = null, cookie = null)
+        assertFalse("X-Gnarly" in bare, "подпись не посчиталась — заголовка быть не должно")
+        assertFalse("Cookie" in bare, "сессии нет — заголовка быть не должно")
+        // Остальные заголовки от этого не зависят.
+        assertEquals(config.userAgent, bare["User-Agent"])
+    }
+
+    @Test
     fun `пробелов и плюсов в строке запроса нет`() {
         val query = recommendQuery(cursor = 0, count = 20, region = "US", language = "en")
 

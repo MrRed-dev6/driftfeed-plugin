@@ -17,10 +17,11 @@ import org.json.JSONObject
  * ([TikTokSigner]) уходит как страховка, а не как пропуск: её отсутствие
  * запрос не отменяет.
  *
- * Cookie плагину не передаются контрактом, их подставляет клиент в свой
- * `httpGet`. Пока он этого не делает, [page] вернёт `null` и [TikTokApi]
- * останется на шлюзе — то есть плагин работает и без правки клиента, просто
- * без персональных рекомендаций.
+ * Сессию плагин держит сам: читает строку cookie из своего хранилища
+ * (`getStorage("cookies:www.tiktok.com")`) и сам ставит заголовок `Cookie`.
+ * Значение туда кладёт клиент после экрана входа — в формировании запроса он
+ * не участвует. Пока записи нет, [page] вернёт `null` и [TikTokApi] останется
+ * на шлюзе: плагин работает и без правки клиента, просто без рекомендаций.
  */
 internal class TikTokRecommend(
     private val context: ProviderContext,
@@ -29,7 +30,12 @@ internal class TikTokRecommend(
 
     private val signer = TikTokSigner(context)
 
-    /** Одна страница ленты. `null` — не вышло; это нормальный запасной путь. */
+    /**
+     * Одна страница ленты. `null` — не вышло; это нормальный запасной путь.
+     *
+     * Сессию плагин берёт из своего хранилища сам ([session]) и сам ставит
+     * заголовок `Cookie` — клиент в формировании запроса не участвует.
+     */
     suspend fun page(cursor: Int): Result? {
         val query = recommendQuery(
             cursor = cursor,
@@ -41,10 +47,11 @@ internal class TikTokRecommend(
         // и с ней, и без неё. Если подписать не вышло, запрос всё равно уходит —
         // терять целый источник из-за необязательного заголовка незачем.
         val signature = signer.sign(query, config.userAgent)
+        val cookie = session()
 
         val url = config.baseUrl + config.recommendPath + "?" + query
         val body = try {
-            context.httpGet(url, headers(signature)).toString(Charsets.UTF_8)
+            context.httpGet(url, recommendHeaders(config, signature, cookie)).toString(Charsets.UTF_8)
         } catch (e: Throwable) {
             context.log(TAG, "официальная лента не ответила: ${e.message}")
             return null
@@ -68,8 +75,12 @@ internal class TikTokRecommend(
 
         val array = root.optJSONArray("itemList")
         if (array == null) {
-            // Именно этот ответ приходит без cookie: поля нет вовсе.
-            context.log(TAG, "официальная лента пуста — похоже, нет cookie аккаунта")
+            // Именно этот ответ приходит без сессии: поля нет вовсе.
+            if (cookie == null) {
+                context.log(TAG, "официальная лента пуста — в хранилище нет сессии аккаунта")
+            } else {
+                context.log(TAG, "официальная лента пуста — сессия есть, но TikTok её не принял")
+            }
             return null
         }
 
@@ -91,20 +102,23 @@ internal class TikTokRecommend(
         return Result(items = items, cursor = next, hasMore = hasMore)
     }
 
-    private fun headers(signature: String?): Map<String, String> = linkedMapOf<String, String>(
-        "User-Agent" to config.userAgent,
-        "Accept" to "application/json, text/plain, */*",
-        "Accept-Language" to "${config.language}-${config.region},${config.language};q=0.9",
-        "Referer" to config.baseUrl + "/foryou",
-        "X-Requested-With" to "XMLHttpRequest",
-        "Sec-Fetch-Dest" to "empty",
-        "Sec-Fetch-Mode" to "cors",
-        "Sec-Fetch-Site" to "same-origin",
-    ).apply {
-        // Именно так делает браузер. Сегодня эндпоинт отвечает и без заголовка,
-        // но у сессии с аккаунтом проверка может включиться — заголовок дешёвый.
-        if (signature != null) put("X-Gnarly", signature)
-    }
+    /**
+     * Строка `Cookie` из хранилища плагина, или `null` — вход не выполнялся.
+     *
+     * Кладёт её туда клиент после экрана входа (ключ — [TikTokConfig.sessionStorageKey]),
+     * а плагин только читает и ставит заголовок. Так клиент не подставляет
+     * cookie в запросы и не разбирает `Set-Cookie`: он отдаёт значение, как и
+     * задумано с `getStorage`, а формирование запроса целиком остаётся за плагином.
+     *
+     * Содержимое никогда не логируется: это чужая сессия.
+     */
+    private suspend fun session(): String? =
+        try {
+            context.getStorage(config.sessionStorageKey)?.takeIf { it.isNotBlank() }
+        } catch (e: Throwable) {
+            context.log(TAG, "хранилище сессии недоступно: ${e.message}")
+            null
+        }
 
     /** Страница ленты и её место в выдаче. */
     internal data class Result(
@@ -116,6 +130,31 @@ internal class TikTokRecommend(
     private companion object {
         const val TAG = "TikTokRecommend"
     }
+}
+
+/**
+ * Заголовки запроса к официальной ленте.
+ *
+ * `Cookie` ставит сам плагин — из своего хранилища, а не клиент: см.
+ * [TikTokRecommend.session]. `X-Gnarly` добавляется, только если подпись
+ * получилась, — сегодня эндпоинт отвечает и без неё.
+ */
+internal fun recommendHeaders(
+    config: TikTokConfig,
+    signature: String?,
+    cookie: String?,
+): Map<String, String> = linkedMapOf<String, String>(
+    "User-Agent" to config.userAgent,
+    "Accept" to "application/json, text/plain, */*",
+    "Accept-Language" to "${config.language}-${config.region},${config.language};q=0.9",
+    "Referer" to config.baseUrl + "/foryou",
+    "X-Requested-With" to "XMLHttpRequest",
+    "Sec-Fetch-Dest" to "empty",
+    "Sec-Fetch-Mode" to "cors",
+    "Sec-Fetch-Site" to "same-origin",
+).apply {
+    if (signature != null) put("X-Gnarly", signature)
+    if (cookie != null) put("Cookie", cookie)
 }
 
 /**
