@@ -26,8 +26,8 @@ internal class TikTokSigner(private val context: ProviderContext) {
 
     /**
      * Подпись для строки запроса. `null` — подписать не вышло (движок недоступен,
-     * скрипт не разобрался). Это не ошибка пользователя: вызывающий просто
-     * выбирает другой источник данных.
+     * скрипт не разобрался). Это не ошибка: вызывающий просто отправляет запрос
+     * без заголовка — эндпоинт ленты сегодня отвечает и так.
      *
      * `query` должен быть ровно тем, что уйдёт в URL после `?`: TikTok считает
      * подпись по строке как есть, и любое расхождение в порядке или кодировке
@@ -35,20 +35,21 @@ internal class TikTokSigner(private val context: ProviderContext) {
      */
     suspend fun sign(query: String, userAgent: String): String? {
         if (!ready && !load()) return null
-        evaluate(query, userAgent)?.let { return it }
+        evaluate(query, userAgent, logFailure = false)?.let { return it }
         // Движок мог быть пересоздан клиентом — грузим скрипт ещё раз.
+        // Молча: первая неудача — это штатная проверка «движок тот же?».
         ready = false
         if (!load()) return null
-        return evaluate(query, userAgent)
+        return evaluate(query, userAgent, logFailure = true)
     }
 
-    private suspend fun evaluate(query: String, userAgent: String): String? =
+    private suspend fun evaluate(query: String, userAgent: String, logFailure: Boolean): String? =
         try {
             context.evalJs(SIGN_CALL, mapOf("QS" to query, "UA" to userAgent))
                 .trim()
                 .takeIf { it.isNotEmpty() }
         } catch (e: Throwable) {
-            context.log(TAG, "подпись не посчиталась: ${e.message}")
+            if (logFailure) context.log(TAG, "подпись не посчиталась: ${e.message}")
             null
         }
 
