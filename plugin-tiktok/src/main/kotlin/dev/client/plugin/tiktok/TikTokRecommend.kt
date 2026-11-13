@@ -19,9 +19,10 @@ import org.json.JSONObject
  *
  * Сессию плагин держит сам: читает строку cookie из своего хранилища
  * (`getStorage("cookies:www.tiktok.com")`) и сам ставит заголовок `Cookie`.
- * Значение туда кладёт клиент после экрана входа — в формировании запроса он
- * не участвует. Пока записи нет, [page] вернёт `null` и [TikTokApi] останется
- * на шлюзе: плагин работает и без правки клиента, просто без рекомендаций.
+ * Значение туда кладёт клиент после входа — но сейчас он этого не делает по
+ * своему решению, поэтому [hasSession] отвечает `false` и [TikTokApi] ленту
+ * отсюда не спрашивает вовсе. Код остаётся рабочим: появится строка в
+ * хранилище — включится без правок.
  */
 internal class TikTokRecommend(
     private val context: ProviderContext,
@@ -101,6 +102,16 @@ internal class TikTokRecommend(
         val hasMore = root.optBoolean("hasMore", false)
         return Result(items = items, cursor = next, hasMore = hasMore)
     }
+
+    /**
+     * Есть ли в хранилище сессия аккаунта.
+     *
+     * Пока клиент её не передаёт, официальная лента не запрашивается вообще:
+     * без сессии TikTok отвечает `{"status_code": 0}`, и подписывать такой
+     * запрос незачем. Как только клиент положит строку под
+     * [TikTokConfig.sessionStorageKey], лента включится сама.
+     */
+    suspend fun hasSession(): Boolean = session() != null
 
     /**
      * Строка `Cookie` из хранилища плагина, или `null` — вход не выполнялся.
