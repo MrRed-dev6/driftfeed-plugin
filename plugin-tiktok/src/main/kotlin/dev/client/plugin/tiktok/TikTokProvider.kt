@@ -11,10 +11,11 @@ import dev.client.provider.VideoItem
 /**
  * Источник данных TikTok для клиента driftfeed.
  *
- * Данные берутся со страниц раздела `/embed`, которые отдаются без подписи
- * (см. [TikTokApi]). Возможности объявлены по факту, а не «на всякий случай»:
- * клиент скрывает в интерфейсе то, чего провайдер не умеет, и обещать лишнее
- * значит показать пользователю пустой экран вместо кнопки.
+ * Две дороги: страницы `/embed` самого TikTok (профиль, видео, поиск по
+ * хештегам) и публичный шлюз для ленты и комментариев — см. [TikTokApi].
+ * Возможности объявлены по факту, а не «на всякий случай»: клиент скрывает
+ * в интерфейсе то, чего провайдер не умеет, и обещать лишнее значит показать
+ * пользователю пустой экран вместо кнопки.
  *
  * Настроек у провайдера нет намеренно: клиент — чужая сторона, и договариваться
  * с ним о новом методе конфигурации значит менять общий контракт. Регион и
@@ -32,8 +33,8 @@ class TikTokProvider(private val context: ProviderContext) : Provider {
         feed = true,
         // Поиск идёт по хештегам: открытого поиска по словам без подписи нет.
         search = true,
-        // В /embed комментариев не бывает — не показываем кнопку, которой некуда вести.
-        comments = false,
+        // Комментарии — через публичный шлюз, у TikTok они закрыты подписью.
+        comments = true,
         videoByUrl = true,
         profile = true,
     )
@@ -46,7 +47,7 @@ class TikTokProvider(private val context: ProviderContext) : Provider {
     override suspend fun getVideo(id: String): VideoItem = api.video(id)
 
     override suspend fun getComments(videoId: String, cursor: String?): Page<Comment> =
-        api.comments()
+        api.comments(videoId, cursor)
 
     override suspend fun getProfile(id: String): Author = api.profile(id)
 }

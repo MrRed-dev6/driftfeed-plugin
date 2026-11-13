@@ -9,17 +9,13 @@ import dev.client.provider.VideoItem
 import org.json.JSONObject
 
 /**
- * Источник данных поверх HTML-страниц раздела `/embed`.
+ * Источник данных TikTok: две дороги, каждая для того, что ей доступно.
  *
- * Почему так, а не через `/api/…`: веб-API TikTok отвечает пустым телом без
- * подписи `X-Bogus`/`X-Gnarly`, которую считает только браузерный SDK
- * (`webmssdk.js`, 243 КБ обфусцированного JSVMP). В QuickJS он не работает,
- * а `X-Bogus` сам по себе TikTok уже не принимает. Раздел `/embed` — тот же
- * TikTok, но отдаёт данные обычной страницей: подпись не нужна, cookie не нужны.
- *
- * Что из этого следует по возможностям:
- *  - профиль, видео по id, лента и поиск — есть;
- *  - комментариев в `/embed` нет вообще, поэтому `comments = false`.
+ *  - `/embed` самого TikTok — профиль, видео по id, страница хештега (поиск).
+ *    Обычный HTML, подпись не нужна, посредники не участвуют.
+ *  - шлюз `tikwm.com` ([TikTokGateway]) — лента и комментарии. Их у TikTok нельзя
+ *    взять без подписи: веб-API отвечает пустым телом даже с валидной
+ *    `X-Gnarly`, а в `/embed` этих разделов нет по устройству страницы.
  *
  * Ничего не кэширует: запрос → разбор → Page. Ошибки переводит в ProviderError,
  * чтобы клиент показал осмысленный текст.
@@ -29,25 +25,55 @@ internal class TikTokApi(
     private val config: TikTokConfig,
 ) {
 
+    private val gateway: TikTokGateway = TikTokGateway(context, config)
+
     /**
-     * Лента — это популярные хештеги по кругу. Курсор хранит номер тега,
-     * а не позицию внутри страницы: постраничности в `/embed` нет.
+     * Лента. Шлюз отдаёт случайную порцию, курсора у него нет, поэтому курсор
+     * здесь — просто номер страницы: прокрутка не упирается в конец, а каждая
+     * следующая порция — новые видео.
      */
     suspend fun feed(cursor: String?): Page<VideoItem> {
-        val index = cursor?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
-        val tag = config.feedTags[index % config.feedTags.size]
-        val items = embedNodeOrNull("/tag/$tag")?.let(::playlistItems).orEmpty()
-        val next = (index + 1) % config.feedTags.size
-        return Page(items = items, nextCursor = next.toString(), hasMore = items.isNotEmpty())
+        val page = cursor?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
+        val raw = gateway.feed()
+        val items = ArrayList<VideoItem>(raw.size)
+        var photoPosts = 0
+        for (entry in raw) {
+            val item = parseGatewayItem(entry) ?: continue
+            // Фотопосты приходят без ссылки на поток: проигрывать нечего.
+            if (item.playUrl.isBlank()) {
+                photoPosts++
+                continue
+            }
+            items.add(item)
+        }
+        if (photoPosts > 0) context.log(TAG, "пропущено фотопостов без видео: $photoPosts")
+        if (items.isEmpty()) {
+            context.log(TAG, "лента пришла пустой (${raw.size} записей от шлюза)")
+            return Page(items = emptyList(), nextCursor = null, hasMore = false)
+        }
+        return Page(items = items, nextCursor = (page + 1).toString(), hasMore = true)
     }
 
-    /** Поиск по хештегу: другого открытого поиска у TikTok нет. */
+    /**
+     * Поиск по хештегу: другого открытого поиска у TikTok нет.
+     *
+     * Полнотекстового поиска без подписи не существует: `/api/search/general/full/`
+     * отдаёт пустое тело, а у шлюза поиск закрыт Cloudflare. Зато страница
+     * хештега открыта, поэтому запрос превращается в тег, а для фразы из
+     * нескольких слов проверяются два варианта (см. [hashtagCandidates]).
+     */
     suspend fun search(query: String, cursor: String?): Page<VideoItem> {
-        val tag = hashtagOf(query)
-        if (tag.isEmpty()) throw ProviderError.Unknown("Пустой поисковый запрос")
-        val items = embedNodeOrNull("/tag/$tag")?.let(::playlistItems).orEmpty()
-        if (items.isEmpty()) context.log(TAG, "по хештегу #$tag ничего не нашлось")
-        return Page(items = items, nextCursor = null, hasMore = false)
+        val candidates = hashtagCandidates(query)
+        if (candidates.isEmpty()) throw ProviderError.Unknown("Пустой поисковый запрос")
+        for (tag in candidates) {
+            val items = embedNodeOrNull("/tag/$tag")?.let(::playlistItems).orEmpty()
+            if (items.isNotEmpty()) {
+                if (tag != candidates.first()) context.log(TAG, "по фразе нашёлся только #$tag")
+                return Page(items = items, nextCursor = null, hasMore = false)
+            }
+        }
+        context.log(TAG, "по хештегам $candidates ничего не нашлось")
+        return Page(items = emptyList(), nextCursor = null, hasMore = false)
     }
 
     suspend fun video(id: String): VideoItem {
@@ -80,8 +106,37 @@ internal class TikTokApi(
         return parseAuthor(user)
     }
 
-    /** Комментариев в `/embed` нет: метод существует только чтобы контракт был целым. */
-    fun comments(): Page<Comment> = Page(items = emptyList(), nextCursor = null, hasMore = false)
+    /** Комментарии видео через шлюз: курсор — смещение, то есть номер показанного. */
+    suspend fun comments(videoId: String, cursor: String?): Page<Comment> {
+        val clean = videoId.trim()
+        if (clean.isEmpty() || !clean.all { it.isDigit() }) {
+            throw ProviderError.Unknown("Некорректный id видео: $videoId")
+        }
+        val offset = cursor?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
+        val data = gateway.comments(clean, offset)
+
+        val array = data.optJSONArray("comments")
+            ?: return Page(items = emptyList(), nextCursor = null, hasMore = false)
+        val items = ArrayList<Comment>(array.length())
+        for (i in 0 until array.length()) {
+            val entry = array.optJSONObject(i) ?: continue
+            parseComment(entry)?.let(items::add)
+        }
+
+        // hasMore шлюз присылает не всегда: если его нет, считаем по total.
+        val total = data.lng("total", "total_count")
+        val hasMore = if (data.has("hasMore") && !data.isNull("hasMore")) {
+            data.optBoolean("hasMore")
+        } else {
+            total > offset + items.size
+        }
+        val next = (offset + items.size).toString()
+        return Page(
+            items = items,
+            nextCursor = if (hasMore) next else null,
+            hasMore = hasMore,
+        )
+    }
 
     // ---------------------------------------------------------------- запрос
 

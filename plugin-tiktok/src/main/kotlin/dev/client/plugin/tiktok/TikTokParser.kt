@@ -1,6 +1,7 @@
 package dev.client.plugin.tiktok
 
 import dev.client.provider.Author
+import dev.client.provider.Comment
 import dev.client.provider.VideoItem
 import org.json.JSONArray
 import org.json.JSONObject
@@ -135,12 +136,60 @@ internal fun parseEmbedVideo(itemInfos: JSONObject, authorInfos: JSONObject?): V
     )
 }
 
+/**
+ * Элемент ленты шлюза: плоский объект с `video_id`, `play` и вложенным `author`.
+ * Отличие от `/embed` в том, что здесь есть и лайки, и комментарии, а ссылка на
+ * поток — готовый адрес CDN, а не список вариантов.
+ */
+internal fun parseGatewayItem(json: JSONObject): VideoItem? {
+    val id = json.str("video_id", "id") ?: return null
+    return VideoItem(
+        id = id,
+        // play — поток без водяного знака; hdplay бывает null, wmplay — с watermark.
+        playUrl = json.str("play", "hdplay", "wmplay") ?: "",
+        coverUrl = json.str("cover", "origin_cover", "ai_dynamic_cover"),
+        description = json.str("title", "content_desc") ?: "",
+        author = parseAuthor(json.obj("author")),
+        likeCount = json.lng("digg_count", "diggCount"),
+        commentCount = json.lng("comment_count", "commentCount"),
+    )
+}
+
+/** Комментарий шлюза: `user` — тот же автор, `digg_count` — лайки, `reply_total` — ответы. */
+internal fun parseComment(json: JSONObject): Comment? {
+    val id = json.str("id", "cid") ?: return null
+    return Comment(
+        id = id,
+        author = parseAuthor(json.obj("user", "author")),
+        text = json.str("text", "content") ?: "",
+        likeCount = json.lng("digg_count", "diggCount", "like_count"),
+        replyCount = json.lng("reply_total", "reply_count", "replyTotal"),
+    )
+}
+
 /** Поиск идёт по хештегам, поэтому из запроса делается тег: «cat videos» → «catvideos». */
 internal fun hashtagOf(query: String): String =
     query.trim()
         .removePrefix("#")
         .filter { it.isLetterOrDigit() || it == '_' }
         .lowercase()
+
+/**
+ * Теги-кандидаты для запроса из нескольких слов.
+ *
+ * Хештег из целой фразы («смешные коты» → `#смешныекоты`) обычно не существует,
+ * поэтому вторым идёт самое длинное слово фразы: по нему видео находятся почти
+ * всегда. Больше двух попыток не делаем — каждая это отдельный запрос к TikTok.
+ */
+internal fun hashtagCandidates(query: String): List<String> {
+    val whole = hashtagOf(query)
+    if (whole.isEmpty()) return emptyList()
+    val longest = query.split(' ', '\n', '\t')
+        .map(::hashtagOf)
+        .filter { it.isNotEmpty() && it != whole }
+        .maxByOrNull { it.length }
+    return if (longest == null) listOf(whole) else listOf(whole, longest)
+}
 
 /** Ник из того, что ввёл пользователь: `@TikTok`, `tiktok`, ссылка на профиль. */
 internal fun usernameOf(id: String): String {

@@ -14,17 +14,18 @@ internal data class TikTokConfig(
     val language: String = "en",
     val baseUrl: String = "https://www.tiktok.com",
     /**
-     * Раздел `/embed` — единственная часть сайта TikTok, которая отдаёт данные
-     * обычным HTML без подписи `X-Bogus`/`X-Gnarly`. Всё остальное (`/api/…`,
-     * лента, поиск, комментарии) закрыто и требует подписи из браузерного SDK.
+     * Раздел `/embed` — часть сайта TikTok, которая отдаёт данные обычным HTML
+     * без подписи `X-Bogus`/`X-Gnarly`: профиль, видео, страница хештега.
      */
     val embedPath: String = "/embed",
     /**
-     * Лента собирается из популярных хештегов: открытой ленты без подписи нет,
-     * а страница хештега отдаёт 10 видео. Курсор ленты — номер хештега в списке,
-     * поэтому прокрутка идёт по кругу и не упирается в конец.
+     * Публичный шлюз, у которого есть лента и комментарии: у самого TikTok эти
+     * два раздела закрыты подписью браузерного SDK, а `/embed` их не отдаёт.
      */
-    val feedTags: List<String> = listOf("fyp", "viral", "trending", "foryou", "foryoupage"),
+    val gatewayUrl: String = "https://www.tikwm.com",
+    /** Сколько элементов просить у шлюза за раз: больше 30 он не отдаёт. */
+    val feedPageSize: Int = 20,
+    val commentPageSize: Int = 20,
     /** Дополнительные заголовки, если понадобятся конкретной версии эндпоинтов. */
     val extraHeaders: Map<String, String> = emptyMap(),
 ) {
