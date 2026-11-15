@@ -55,6 +55,11 @@ internal class TikTokApi(
      * источника в другой.
      */
     suspend fun feed(cursor: String?): Page<VideoItem> {
+        when (feedSourceOverride()) {
+            "gateway" -> return gatewayFeed(cursor)
+            "official" -> if (feedSource == FeedSource.GATEWAY) feedSource = FeedSource.UNKNOWN
+            else -> Unit
+        }
         if (feedSource != FeedSource.GATEWAY) {
             val start = officialCursor(cursor)
             if (start != null) {
@@ -81,6 +86,13 @@ internal class TikTokApi(
             }
         }
         return gatewayFeed(cursor)
+    }
+
+    /** Источник, закреплённый клиентом (см. [TikTokConfig.feedSourceStorageKey]), или null. */
+    private suspend fun feedSourceOverride(): String? = try {
+        context.getStorage(config.feedSourceStorageKey)?.trim()?.takeIf { it.isNotEmpty() }
+    } catch (e: Throwable) {
+        null
     }
 
     /** Номер страницы в официальной ленте, или null — курсор не её. */
