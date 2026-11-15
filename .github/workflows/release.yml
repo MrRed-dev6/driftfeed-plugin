@@ -28,6 +28,19 @@ jobs:
       - name: Тесты разбора
         run: gradle :plugin-tiktok:test --console=plain --no-daemon
 
+      # Страховка от повторения: в классах плагина не должно остаться invokedynamic —
+      # на Android нет его служебных классов, а d8 запускается без десугаринга.
+      - name: Нет invokedynamic в классах плагина
+        run: |
+          DIR=plugin-tiktok/build/classes/kotlin/main
+          test -d "$DIR" || { echo "нет $DIR" >&2; exit 1; }
+          if find "$DIR" -name '*.class' -print0 | xargs -0 javap -c -p | grep -q invokedynamic; then
+            echo "в классах плагина есть invokedynamic: на Android он не работает" >&2
+            find "$DIR" -name '*.class' -print0 | xargs -0 javap -c -p | grep -B30 invokedynamic | grep -E "^(public|final|class|  [a-z].*\()" | head -20 >&2
+            exit 1
+          fi
+          echo "invokedynamic не найден"
+
       - name: Проверка ключа подписи
         if: startsWith(github.ref, 'refs/tags/v')
         env:

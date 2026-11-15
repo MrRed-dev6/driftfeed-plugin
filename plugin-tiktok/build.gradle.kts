@@ -4,6 +4,19 @@ plugins {
 
 kotlin {
     jvmToolchain(17)
+
+    compilerOptions {
+        // На Android нет java.lang.invoke.StringConcatFactory и LambdaMetafactory, а d8 в
+        // tools/build-plugin.sh запускается с --no-desugaring. Поэтому Kotlin не должен
+        // генерировать invokedynamic: склейка строк — через StringBuilder, лямбды и
+        // SAM-преобразования — обычными классами. Иначе плагин падает на первой же
+        // строке с шаблоном: NoClassDefFoundError: StringConcatFactory.
+        freeCompilerArgs.addAll(
+            "-Xstring-concat=inline",
+            "-Xlambdas=class",
+            "-Xsam-conversions=class",
+        )
+    }
 }
 
 dependencies {
